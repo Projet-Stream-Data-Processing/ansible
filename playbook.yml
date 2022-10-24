@@ -1,0 +1,155 @@
+---
+- hosts: all
+  become: true
+  #vars:
+  #  container_count: 4
+
+
+  tasks:
+    - name: Install aptitude
+      apt:
+        name: aptitude
+        state: latest
+        update_cache: true
+
+    - name: Install required packages
+      apt:
+        pkg:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+          - virtualenv
+          - python3-setuptools
+          - git
+          - docker-compose
+          - nfs-common
+        state: latest
+        update_cache: true
+
+    - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: Update apt and install docker-ce
+      apt:
+        name: docker-ce
+        state: latest
+        update_cache: true
+
+    - name: Start service
+      service: name=docker enabled=yes state=started
+
+#    - name: Clear app dir
+#      shell: rm -rf /efs/* && umount /efs || /bin/true && rm -rf /efs
+
+    - name: Create and mount efs shareddir
+      shell: mkdir -p /efs && sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport 172.31.81.24:/ /efs
+
+
+#    - name: Clone mediawiki repo
+#      git:
+#        repo: https://github.com/Projet-Stream-Data-Processing/documentation/
+#        dest: /home/ubuntu/documentation
+#        clone: yes
+#        update: yes
+
+#    - name: Get docker info
+#      shell: docker info
+#      register: docker_info
+#      changed_when: False
+
+- hosts: swarm_manager
+  become: true
+
+  tasks:
+    - name: Create swarm manager
+#      shell: docker swarm init
+      community.docker.docker_swarm:
+        state: present
+#        advertise_addr: "{{ ansible_host }}"
+      register: result
+
+    - name: Clear app dir
+      shell: rm -rf /efs/*
+
+    - name: Clear app dir
+      shell: mkdir -p /efs/mongo_db
+
+    - name: Clone mosquitto repo
+      git:
+        repo: https://github.com/Projet-Stream-Data-Processing/DOCKER_MOSQUITTO
+        dest: /efs/DOCKER_MOSQUITTO
+        clone: yes
+        update: yes
+
+    - name: Clone grafana repo
+      git:
+        repo: https://github.com/Projet-Stream-Data-Processing/DOCKER_GRAFANA
+        dest: /efs/DOCKER_GRAFANA
+        clone: yes
+        update: yes
+
+    - name: Clone backend repo
+      git:
+        repo: https://github.com/Projet-Stream-Data-Processing/Back-End
+        dest: /efs/Back-End
+        clone: yes
+        update: yes
+
+    - name: Clone compose all repo
+      git:
+        repo: https://github.com/Projet-Stream-Data-Processing/DOCKER_COMPOSE_ALL
+        dest: /efs/DOCKER_COMPOSE_ALL
+        clone: yes
+        update: yes
+
+#      when: "docker_info.stdout.find('Swarm: inactive') > 0"
+
+#    - name: Deploy stack from a compose file
+#      shell: docker stack deploy --compose-file=/home/ubuntu/DOCKER_MONGODB/docker-compose.yml mystack
+
+#    - name: Adding replicas
+#      shell: sudo docker service update --replicas=3 --detach=true mystack_mongo && sudo docker service update --replicas=3 --detach=true mystack_mongo-express
+
+- hosts: swarm_worker
+  become: true
+  tasks:
+    - name: Get docker swarm worker token
+      set_fact:
+        join_token_worker: "{{ hostvars[groups['swarm_manager'][0]].result.swarm_facts.JoinTokens.Worker }}"
+
+    - name: Debug token
+      ansible.builtin.debug: msg=" {{ join_token_worker }} "
+
+    - name: Join the swarm
+      community.docker.docker_swarm:
+        state: join
+        join_token: "{{ join_token_worker }}"
+        remote_addrs: "{{ hostvars[groups['swarm_manager'][0]].ansible_hostname }}"
+
+#      shell: "docker swarm join --token {{ lookup('file', '/tmp/dsm_wt') }} {{ lookup('file', '/tmp/dsm_ip') }}:2377"
+
+- hosts: swarm_manager
+  become: true
+
+  tasks:
+
+    - name: Deploy app from a compose file
+      shell: docker stack deploy --compose-file=/efs/DOCKER_COMPOSE_ALL/docker-compose.yml app
+
+#    - name: Deploy mediawiki from a compose file
+#      shell: docker stack deploy --compose-file=/home/ubuntu/documentation/docker-compose.yml mediawiki
+
+#      docker_stack:
+#        state: present
+#        name: mystack
+#        compose:
+#          - /home/ubuntu/DOCKER_MONGODB/docker-compose.yml
